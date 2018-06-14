@@ -705,14 +705,19 @@ static dir_scan_callback_action_t dir_scan(dir_directory_t * dir, dir_entry_t **
     // Fill list of entries in this folder
     if (INVALID_HANDLE_VALUE == (ffh = FindFirstFile(params->path, &fd)))
 #else
-//printf("zzzzzzz %s %d\n", params->path, len);
-    if (len > 2 && params->path[len-1] == '*' && params->path[len-2] == '/')
+    if (len > 2 && params->path[len - 1] == '*' && params->path[len - 2] == '/')
     {
-        params->path[len-2] = 0;
-    }
-    if (!len) params->path[0] = '.', params->path[1] = 0;
-//printf("%s\n", params->path);
-        
+        char c = params->path[len - 2];
+        params->path[len - 2] = 0;
+        dp = opendir(params->path);
+        params->path[len - 2] = c;
+        if (!dp)
+            return E_DIR_CONTINUE;
+    } else if (!len)
+    {
+        if (!(dp = opendir(".")))
+            return E_DIR_CONTINUE;
+    } else
     if (!(dp = opendir(params->path)))
 #endif
     {
@@ -1064,11 +1069,11 @@ dir_entry_t ** DIR_rev_index(dir_directory_t * dir, dir_entry_t ** index)
 
 int DIR_sort_names_descending(const dir_entry_t* pp1, const dir_entry_t* pp2)
 {
-    if (pp1->is_folder && ! pp2->is_folder)
+    if (pp1->is_folder && !pp2->is_folder)
     {
         return -1;
     }
-    if (pp2->is_folder && ! pp1->is_folder)
+    if (pp2->is_folder && !pp1->is_folder)
     {
         return 1;
     }
