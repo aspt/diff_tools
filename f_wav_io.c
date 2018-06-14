@@ -21,16 +21,20 @@
 *       pcm_data = WAV_load_doubles("file.wav", &nsamples);
 *
 */
+#ifdef _MSC_VER
+#   pragma warning (disable:4310)      // warning C4310: cast truncates constant value
+#   ifndef _CRT_SECURE_NO_WARNINGS
+#       define _CRT_SECURE_NO_WARNINGS
+#   endif
+#endif
+
 #include "f_wav_io.h"
 #include <assert.h>
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
 #include <limits.h>
-
-#ifdef _MSC_VER
-#   pragma warning (disable:4310)      // warning C4310: cast truncates constant value
-#endif
+#include <stdarg.h>    // WAV_cue_printf
 
 #define MIN(x,y) ((x)<(y) ? (x):(y))
 #define ABS(x)   ((x)>=0 ? (x):-(x))
@@ -237,7 +241,7 @@ l_fail:
 /**
 *   Endian-independent byte-write macros
 */
-#define WR(x, n) *p++ = (char)((x) >> 8*n)
+#define WR(x, n) *p++ = (char)(((x) >> 8*n) & 255)
 #define WRITE_2(x) WR(x,0); WR(x,1);
 #define WRITE_4(x) WR(x,0); WR(x,1); WR(x,2); WR(x,3);
 
@@ -251,8 +255,7 @@ static int wav_write_header(
     unsigned int  ch,           //!< Number of channels (1,2...)
     unsigned int  bips,         //!< Number of bits per sample (8,16...)
     unsigned long data_size,    //!< PCM data size, excluding headers
-    unsigned long file_size,    //!< Total file size in bytes (assume file 
-                                //!< was opened with WAV_writerOpen())
+    unsigned long file_size,    //!< Total file size in bytes, incl 44-bytes header
     int           format_tag    //!< WAV format tag
     )
 {
@@ -276,9 +279,9 @@ static int wav_write_header(
         WRITE_2(nBlockAlign);                  // 20: Format.nBlockAlign
         WRITE_2(bips);                         // 22: Format.BitsPerSample
         WRITE_4(0x61746164);                   // 24: ChunkData.Id = 'data'
-        WRITE_4(data_size - WAV_HEADER_SIZE);  // 28: ChunkData.Size = File size - 44
+        WRITE_4(data_size);                    // 28: ChunkData.Size = File size - 44
                                                //     Total size: 0x2C (44) bytes
-        rewind(file);
+        fseek(file, 0, SEEK_SET);              // no rewind() in WinCE
         success = (int)fwrite(hdr, WAV_HEADER_SIZE, 1, file);
     }
     return success;
@@ -292,8 +295,8 @@ static int wav_update_header(wav_file_t *wf)
 {
     int success;
     long pos;
-    fseek(wf->file, 0, SEEK_END);
-    pos = ftell(wf->file);
+    //fseek(wf->file, 0, SEEK_END);
+    pos = ftell(wf->file);      // Assume file pos is after last write op
 
     if (wf->cue) 
     {
@@ -309,7 +312,7 @@ static int wav_update_header(wav_file_t *wf)
             if (text_bytes & 1) text_bytes++;
         } while(NULL != (cue = cue->next));
 
-        hdr = malloc(12 + 24*cue_count + 12 + 40*cue_count + text_bytes);
+        hdr = (char*)malloc(12 + 24*cue_count + 12 + 40*cue_count + text_bytes);
         if (!hdr)
         {
             return 0;
@@ -368,7 +371,7 @@ static int wav_update_header(wav_file_t *wf)
         free(hdr);
     }
 
-    success = wav_write_header(wf->file, wf->fmt.hz, wf->fmt.ch, wf->fmt.bips, pos, ftell(wf->file), wf->fmt.pcm_type);
+    success = wav_write_header(wf->file, wf->fmt.hz, wf->fmt.ch, wf->fmt.bips, pos - WAV_HEADER_SIZE, ftell(wf->file), wf->fmt.pcm_type);
 
     fseek(wf->file, pos, SEEK_SET);
     return success;
@@ -414,7 +417,7 @@ wavpos_t WAV_get_remaining_samples(const wav_file_t *wf)
 /**
 *   Convert normalized floating-point data to integer PCM data.
 */
-static void pack_IEEE_to_int (
+static void wav_pack_IEEE_to_int (
     const void *input,      //!< [IN] Buffer with data in the range [-1; +1)
     int is_double,          //!< float or double input
     size_t size,            //!< Number of elements in the input buffer
@@ -465,7 +468,7 @@ static void pack_IEEE_to_int (
 /**
 *   Convert integer PCM data to normalized floating-point data in-place.
 */
-static void int_to_IEEE (
+static void wav_int_to_IEEE (
     void *buf,              //!< [IN/OUT] Buffer for in-place conversion 
     size_t size,            //!< Number of elements in the input buffer
     int bits_per_sample,    //!< Bits per sample for input data buffer
@@ -473,9 +476,11 @@ static void int_to_IEEE (
 )
 {
     unsigned char * src = (unsigned char *) buf + ABS(bits_per_sample) * size / CHAR_BIT;
-    long   tmp;
+//    long   tmp;
+    int   tmp;
     int    sizeof_sample = ABS(bits_per_sample) / CHAR_BIT;
-    int    shift        = (CHAR_BIT*sizeof(long)) - ABS(bits_per_sample);
+//    int    shift        = (CHAR_BIT*sizeof(long)) - ABS(bits_per_sample);
+    int    shift        = 32 - ABS(bits_per_sample);
     double scale        = ldexp(1, 1 - ABS(bits_per_sample));
 
     if (size)
@@ -505,7 +510,10 @@ static void int_to_IEEE (
             do 
             {
                 src -= sizeof_sample;
-                tmp = *(long *) src;
+                //tmp = *(long *) src;
+//tmp = *(volatile int *) src;
+tmp = src[0] + 256*(src[1] + 256*(src[2] + 256*src[3]));
+//printf("%d %p\n", tmp, src);
                 tmp = tmp << shift >> shift;
                 if (bits_per_sample == 8)        // unsigned PCM for 8-bit WAV's
                 {
@@ -527,7 +535,7 @@ static void int_to_IEEE (
 /**
 *   Convert doubles to floats
 */
-static void double_to_float(const double *src, float *dst, size_t size)
+static void wav_double_to_float(const double *src, float *dst, size_t size)
 {
     while(size-- > 0)
     {
@@ -538,7 +546,7 @@ static void double_to_float(const double *src, float *dst, size_t size)
 /**
 *   Convert floats to doubles
 */
-static void float_to_double(const float *src, double *dst, size_t size)
+static void wav_float_to_double(const float *src, double *dst, size_t size)
 {
     src += size; dst += size;
     while(size-- > 0)
@@ -701,16 +709,16 @@ static size_t wav_read_IEEE (
         {
             if (is_double && wf->fmt.bips == 32)
             {
-                float_to_double(work_buf, work_buf, samples_read * wf->fmt.ch);
+                wav_float_to_double(work_buf, work_buf, samples_read * wf->fmt.ch);
             }
             else if (!is_double && wf->fmt.bips == 64)
             {
-                double_to_float(work_buf, out_buf, samples_read * wf->fmt.ch);
+                wav_double_to_float(work_buf, out_buf, samples_read * wf->fmt.ch);
             }
         }
         else
         {
-            int_to_IEEE(out_buf, samples_read * wf->fmt.ch, wf->fmt.bips, is_double);
+            wav_int_to_IEEE(out_buf, samples_read * wf->fmt.ch, wf->fmt.bips, is_double);
         }
         if (samples_read < samples_count)
         {
@@ -751,7 +759,7 @@ static wav_file_t * wav_open_write_or_append (
     }
     if (container == EFILE_WAV)
     {
-        if (!wav_write_header(wf->file, 0, 0, 0, WAV_HEADER_SIZE, WAV_HEADER_SIZE, 1))
+        if (!wav_write_header(wf->file, 0, 0, 0, 0, WAV_HEADER_SIZE, 1))
         {
             WAV_close_write(wf);
             return NULL;
@@ -817,25 +825,53 @@ void WAV_flush(wav_file_t *wf)
             wav_update_header(wf);
         }
         fflush(wf->file);
-        fseek(wf->file, 0, SEEK_END);
+        //fseek(wf->file, 0, SEEK_END);
     }
 }
 
 /**
 *   Add cue mark at specified location
 */
-void WAV_add_cue(wav_file_t *wf, int pos_samples, int len_samples, const char * text)
+void WAV_cue_add(wav_file_t *wf, int pos_samples, int len_samples, const char * text)
 {
-    wav_cue_t * cue = malloc(sizeof(wav_cue_t) + strlen(text));
-    if (cue) 
+    if (wf)
     {
-        strcpy(cue->text, text);
-        cue->pos_samples = pos_samples;
-        cue->len_samples = len_samples;
-        cue->next = wf->cue;
-        wf->cue = cue;
+        wav_cue_t * cue = wf->cue;
+        if (cue && (unsigned)pos_samples == cue->pos_samples + cue->len_samples && !strcmp(cue->text, text))
+        {
+            cue->len_samples += len_samples;
+        }
+        else
+        {
+            cue = (wav_cue_t *)malloc(sizeof(wav_cue_t) + strlen(text));
+            if (cue) 
+            {
+                strcpy(cue->text, text);
+                cue->pos_samples = pos_samples;
+                cue->len_samples = len_samples;
+                cue->next = wf->cue;
+                wf->cue = cue;
+            }
+        }
     }
 }
+
+/**
+*   Add cue mark with printf()-like format spec
+*/
+void WAV_cue_printf(wav_file_t *wf, int pos_samples, int len_samples, const char * text,...)
+{
+    char cue[1024];
+    va_list va;
+    va_start(va, text);
+#ifdef _TMS320C6X
+    vsnprintf(cue, 1024, text, va); // vsnprintf      _vsntprintf
+#else
+    _vsnprintf(cue, 1024, text, va); // vsnprintf      _vsntprintf
+#endif
+    WAV_cue_add(wf, pos_samples, len_samples, cue);
+}
+
 
 /**
 *   Write normalized floating-point data to the WAV file.
@@ -875,18 +911,18 @@ static size_t wav_write_IEEE (
             switch (wf->fmt.pcm_type)
             {
                 case E_PCM_INTEGER:
-                    pack_IEEE_to_int(in_buf, is_double, samples_count * wf->fmt.ch, wf->fmt.bips, pcm_buf);
+                    wav_pack_IEEE_to_int(in_buf, is_double, samples_count * wf->fmt.ch, wf->fmt.bips, pcm_buf);
                     break;
                 case E_PCM_IEEE_FLOAT:
                     if (pcm_buf != in_buf)
                     {
                         if (is_double)
                         {
-                            double_to_float(in_buf, pcm_buf, samples_count * wf->fmt.ch);
+                            wav_double_to_float(in_buf, pcm_buf, samples_count * wf->fmt.ch);
                         }
                         else
                         {
-                            float_to_double(in_buf, pcm_buf, samples_count * wf->fmt.ch);
+                            wav_float_to_double(in_buf, pcm_buf, samples_count * wf->fmt.ch);
                         }
                     }
                     break;
@@ -957,6 +993,76 @@ size_t WAV_save_doubles (
     return WAV_save_doublesEx(x, size, file_name, WAV_fmt(44100, 1, 64, E_PCM_IEEE_FLOAT));
 }
 
+
+size_t WAV_save_doubles2Ex (
+    const double        *x0,                //!< [IN] Buffer with left channel data in the range [-1; +1)
+    const double        *x1,                //!< [IN] Buffer with right channle data in the range [-1; +1)
+    int                 step,               //!< step between samples in the channes
+    size_t              size,               //!< samples to write
+    const TCHAR         *file_name,         //!< [IN] WAV file name
+    const pcm_format_t  fmt                 //!< PCM format
+    )
+{
+    wav_file_t * wf = WAV_open_write(file_name, fmt, EFILE_WAV);
+    double * pcm = (double *)malloc(2*size*sizeof(double));
+    if (wf && pcm)
+    {
+        size_t i;
+        for (i = 0; i < size; i++)
+        {
+            pcm[2*i+0] = x0[i*step];
+            pcm[2*i+1] = x1[i*step];
+        }
+        WAV_write_doubles(wf, pcm, size);
+        WAV_close_write(wf);
+        return size;
+    }
+    return 0;
+}
+
+size_t WAV_save_doubles_stereo (
+    const double        *x0,                //!< [IN] Buffer with left channel data in the range [-1; +1)
+    const double        *x1,                //!< [IN] Buffer with right channle data in the range [-1; +1)
+    int                 step,               //!< step between samples in the channes
+    size_t              size,               //!< samples to write
+    const TCHAR         *file_name          //!< [IN] WAV file name
+    )
+{
+    return WAV_save_doubles2Ex(x0, x1, step, size, file_name, WAV_fmt(44100, 2, 64, E_PCM_IEEE_FLOAT));
+}
+
+
+
+
+
+
+
+size_t WAV_save_floatsEx (
+    const float *x,                        //!< [IN] Buffer with data in the range [-1; +1)
+    size_t size,                            //!< samples to write
+    const TCHAR *file_name,                 //!< [IN] WAV file name
+    const pcm_format_t fmt                  //!< PCM format
+)
+{
+    wav_file_t * wf = WAV_open_write(file_name, fmt, EFILE_WAV);
+    if (wf)
+    {
+        WAV_write_floats(wf, x, size);
+        WAV_close_write(wf);
+        return size;
+    }
+    return 0;
+}
+
+size_t WAV_save_floats (
+    const float *x,                        //!< [IN] Buffer with data in the range [-1; +1)
+    size_t size,                            //!< samples to write
+    const TCHAR *file_name                  //!< [IN] WAV file name
+)
+{
+    return WAV_save_floatsEx(x, size, file_name, WAV_fmt(44100, 1, 32, E_PCM_IEEE_FLOAT));
+}
+
 static void * wav_load (
     const TCHAR * file_name,                //!< [IN] WAV file name
     int * size,                             //!< [OUT] number of samples read (mono assumed!)
@@ -1015,7 +1121,7 @@ float * WAV_load_floats (
 
 
 #define NELEM( x )           ( sizeof(x) / sizeof((x)[0]) )
-int WFW_append_doubles_ex (
+static int wav_append_doubles_ex (
     const double *x,                        //!< [IN] Buffer with data in the range [-1; +1)
     size_t size,                            //!< samples to write
     const TCHAR *file_name,                 //!< [IN] WAV file name
@@ -1091,7 +1197,7 @@ int WAV_append_doubles(
     const TCHAR *file_name   //!< [IN] WAV file name
 )
 {
-    return WFW_append_doubles_ex(pcm, nsamples, file_name, WAV_fmt(44100, 1, 64, E_PCM_IEEE_FLOAT));
+    return wav_append_doubles_ex(pcm, nsamples, file_name, WAV_fmt(44100, 1, 64, E_PCM_IEEE_FLOAT));
 }
 
 
@@ -1115,7 +1221,7 @@ int WAV_append_doubles_pair (
             pcm_l += step;
             pcm_r += step;
         }
-        success = WFW_append_doubles_ex(p, nsamples, file_name, WAV_fmt(44100, 2, 64, E_PCM_IEEE_FLOAT));
+        success = wav_append_doubles_ex(p, nsamples, file_name, WAV_fmt(44100, 2, 64, E_PCM_IEEE_FLOAT));
         free(p);
     }
     return success;
@@ -1181,9 +1287,9 @@ void test_sine (const pcm_format_t * fmt, int isRAW)
         printf("\nERROR creating file %s\n", name);
         return;
     }
-    WAV_add_cue(wfw, 0, 0, "0");
-    WAV_add_cue(wfw, TEST_SIZE/fmt->ch/2, 20, "half");
-    WAV_add_cue(wfw, TEST_SIZE/fmt->ch-1, 40,"end");
+    WAV_cue_add(wfw, 0, 0, "0");
+    WAV_cue_add(wfw, TEST_SIZE/fmt->ch/2, 20, "half");
+    WAV_cue_add(wfw, TEST_SIZE/fmt->ch-1, 40,"end");
 
 #if TEST_DOUBLE
     WAV_write_doubles(wfw, buf, TEST_SIZE/fmt->ch);
@@ -1221,7 +1327,7 @@ void test_sine (const pcm_format_t * fmt, int isRAW)
     }
 }
 
-int main(int argc, char* argv[])
+void test_read_write()
 {
     pcm_format_t fmt;
     fmt.hz = 44100;
@@ -1252,9 +1358,126 @@ int main(int argc, char* argv[])
 //PSNR ( 8 bits): -52.723502
 //PSNR (24 bits): -149.201410
 //PSNR (24 bits): -149.201410
+}
+
+
+/*
+*   PCM to WAV conversion test application
+*/
+
+void help()
+{
+    printf("\nConversion from linear 16-bit RAW PCM to interleaved 24-bit WAV");
+    printf("\nusage: raw2wav -b <samples> -r <hz> -c <ch> <pcm16> <wav24>");
+    printf("\n\t-b input file buffer size (def: 2048)");
+    printf("\n\t-r sample rate, hz");
+    printf("\n\t-c number of channel");
+}
+
+int raw2wav24(int argc, char* argv[])
+{
+    int i;
+    int buf_size = 2048;
+    pcm_format_t fmt;
+    wav_file_t *wfr, *wfw;
+    char * in = NULL;
+    char * out = NULL;
+    double buf[2048*2];
+    double buf2[2048*2];
+    int read = 0;
+    
+    fmt.hz = 44100;        
+    fmt.ch = 1;        
+    fmt.bips = 16;
+    fmt.pcm_type = E_PCM_INTEGER;  
+
+    if (argc == 1)
+    {   
+        help();
+        return 1;
+    }
+    for (i = 1; i < argc; i++)
+    {
+        if (argv[i][0] == '-')
+        {
+            switch(argv[i][1])
+            {
+                case 'b':
+                    buf_size = atoi(argv[++i]);
+                    break;
+                case 'r':
+                    fmt.hz =  atoi(argv[++i]);
+                    continue;
+                case 'c':
+                    fmt.ch =  atoi(argv[++i]);
+                    continue;
+                default:
+                printf("\nillegal option:%s", argv[i]);
+                help();
+                return 1;
+            }
+            
+        }
+        if (!in) 
+            in = argv[i];
+        else if (!out) 
+            out = argv[i];
+        else 
+        {
+            printf("\nillegal option:%s", argv[i]);
+            help();
+            return 1;
+        }
+    }
+    wfr = WAV_open_read(in, &fmt);
+    if (!wfr)
+    {
+            printf("\ncan not open %s", in);
+            return 1;
+    }
+
+    fmt.bips = 24;
+    wfw = WAV_open_write(out, fmt, EFILE_WAV);
+    if (!wfw)
+    {
+            printf("\ncan not open %s", out);
+            return 1;
+    }
+    do
+    {
+        read = WAV_read_doubles(wfr, buf, buf_size);
+        if (read != buf_size)
+        {
+            break;
+        }
+        if (fmt.ch==2)
+        {
+            int i;
+            for(i=0;i<buf_size; i++)
+            {
+                buf2[2*i+0] = buf[i];
+                buf2[2*i+1] = buf[buf_size+i];
+            }
+            for(i=0;i<2*buf_size; i++) buf[i] = buf2[i];
+        }
+
+        WAV_write_doubles(wfw, buf, read);
+    } while (read);
+    WAV_close_write(wfw);
+    WAV_close_read(wfr);
+
     return 0;
 }
 
+int main(int argc, char* argv[])
+{
+#if 1
+    return raw2wav24(argc, argv);
+#else
+    test_read_write();
+    return 0;
+#endif
+}
 // dmc f_wav_io.c -Df_wav_io_test && f_wav_io.exe
 
 #endif

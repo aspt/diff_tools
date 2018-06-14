@@ -157,7 +157,7 @@ static void anchors_save_line(ptrdiff_t anchors[], TCHAR * s)
 static void my_puts(TCHAR * line)
 {
 #ifndef UNICODE
-    CharToOem(line, line);  // Convert file names 
+    CharToOem(line, line);  // Convert file names - TODO: does it need? CharToOem() called in GAUGE_puts
 #endif
     if (g_report_file)
     {
@@ -439,7 +439,7 @@ void OUTPUT_print_file_stat (wav_file_t * wf[2], file_stat_t * diff, cmdline_opt
         }
         FIX_ANCHORS(0)
 
-        if (wf[0]->container != wf[0]->container)
+        if (wf[0]->container != wf[1]->container)
         {
             p += _stprintf(p, _T(" %s<->%s/"), WAV_format_string(wf[0]), WAV_format_string(wf[1]));
         }

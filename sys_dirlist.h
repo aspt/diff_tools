@@ -7,7 +7,8 @@
 #define dirlist_H_INCLUDED
 
 #include <stddef.h>
-#include <tchar.h>
+#include "type_tchar.h"
+//#include <tchar.h>
 #include <wchar.h>
 
 #define DIR_MAX_PATH        0x1000
@@ -17,6 +18,9 @@
 #   define DIR_ENABLE_DIR3     1
 #endif
 
+#ifndef _MSC_VER
+typedef long long __int64;
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -88,8 +92,11 @@ typedef struct dir_entry_tag
 
 //  Public
     __int64         last_write_time;        // Modification time in windows format
+    __int64         creation_time;          // Creation time in windows format
     __int64         size;                   // for dir - size of folder+subfolders
     int             is_folder;              // flag to distinguish file and folder
+    int             is_readonly;            // 
+    int             attributes;
     size_t          name_len;               // strlen(name)
     TCHAR           name[1];                // variable-length name 
 } dir_entry_t;
@@ -136,6 +143,17 @@ void DIR_for_each(
     void * token
 );
 
+
+/**
+*   Same as DIR_for_each(), but start from given sub-directory
+*/
+int DIR_for_each_in_folder(
+    TCHAR * path, 
+    dir_entry_t * fd, 
+    dir_scan_callback_action_t (*on_item_callback) (const TCHAR * path, dir_entry_t * fd, void * token),
+    void * token
+    );
+
 /**
 *   Create index array with given sort mode and comparison function. 
 *   To activate this index, use DIR_set_index()
@@ -167,6 +185,7 @@ int DIR_sort_names_descending(const dir_entry_t* pp1, const dir_entry_t* pp2);
 int DIR_sort_size_descending (const dir_entry_t* pp1, const dir_entry_t* pp2);
 int DIR_sort_time_descending (const dir_entry_t* pp1, const dir_entry_t* pp2);
 int DIR_sort_path_descending (const dir_entry_t* pp1, const dir_entry_t* pp2);
+dir_entry_t ** DIR_rev_index(dir_directory_t * dir, dir_entry_t ** index);
 
 
 /**
@@ -175,11 +194,35 @@ int DIR_sort_path_descending (const dir_entry_t* pp1, const dir_entry_t* pp2);
 int DIR_force_directory(TCHAR * path);
 size_t DIR_get_root_relative_path(const dir_entry_t * item, TCHAR * path);
 TCHAR * PATH_after_last_separator(TCHAR * path);
-TCHAR * PATH_compact_path(TCHAR * compact_path, const TCHAR * path, int len);
+TCHAR * PATH_compact_path(TCHAR * compact_path, const TCHAR * path, size_t len);
 void  PATH_strip_quotes(TCHAR * path);
 TCHAR * PATH_ensure_terminating_separator(TCHAR * path);
+int PATH_mask_match(const TCHAR *glob, const TCHAR *str);
+int PATH_multimask_match(const TCHAR *glob, const TCHAR *str);
 
-unsigned long DIR_files_count(dir_entry_t * fd);
+
+unsigned long DIR_files_count(dir_entry_t * fd, int recursive);
+int DIR_is_file (const TCHAR * file_name);
+int DIR_is_directory (const TCHAR * dir_name);
+
+/**
+*       List of file mask support.
+*   Note: there is no internal support for file masks
+*   in the directory. Files matching should be implemented
+*   via _MatchName and callback functions,
+*/
+typedef struct file_mask_tag
+{
+    struct file_mask_tag * link;
+    int             is_include;
+    TCHAR           mask[1];
+} file_mask_t;
+
+void DIR_file_mask_list_close(file_mask_t * list);
+int DIR_file_mask_list_add_include_mask(file_mask_t ** list, const TCHAR * mask);
+int DIR_file_mask_list_add_exclude_mask(file_mask_t ** list, const TCHAR * mask);
+int DIR_file_mask_list_match_name(file_mask_t * list, const TCHAR * file_name);
+
 
 #if DIR_ENABLE_DIR3
 typedef struct

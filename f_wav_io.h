@@ -7,7 +7,8 @@
 
 #include <stdio.h> 
 #include <limits.h> 
-#include <tchar.h>
+//#include <tchar.h>
+#include "type_tchar.h"
 #include <wchar.h>
 
 
@@ -160,6 +161,7 @@ wavpos_t WAV_bytes_to_samples(const wav_file_t * wf, wavpos_t bytes);
 /**
 *   Open WAV file writer object.
 *   @return 1 if successful, 0 otherwise
+    wav_file_t * wf = WAV_open_write(name, WAV_fmt(44100, 1, 64, E_PCM_IEEE_FLOAT), EFILE_WAV);
 */
 wav_file_t * WAV_open_write (
     const TCHAR    *file_name,              //!< [IN] Output file name
@@ -201,16 +203,22 @@ size_t WAV_write_floats (
 /**
 *   Add cue mark at specified location
 *
-*   example:  WAV_add_cue(wavfile, position, range, "label");
+*   example:  WAV_cue_add(wavfile, position, range, "label");
 */
-void WAV_add_cue(wav_file_t *wf, int pos_samples, int len_samples, const char * text);
+void WAV_cue_add(wav_file_t *wf, int pos_samples, int len_samples, const char * text);
 
+/**
+*   Add cue mark with printf()-like format spec
+*
+*   example:  WAV_cue_printf(wavfile, position, range, "level = %.1fdB", level_db);
+*/
+void WAV_cue_printf(wav_file_t *wf, int pos_samples, int len_samples, const char * text, ...);
 
 /**
 *   Save normalized floating-point data to the WAV file (mono, 44100 hz).
 *   @return number of samples written
 *
-*   example:  WAV_save_doubles(pcm_data, nsamples, "output.wav");
+*   example:  WAV_save_doubles(pcm_data, nsamples, _T("output.wav"));
 */
 size_t WAV_save_doublesEx (
     const double        *x,                 //!< [IN] Buffer with data in the range [-1; +1)
@@ -223,10 +231,43 @@ size_t WAV_save_doubles (
     size_t              size,               //!< samples to write
     const TCHAR         *file_name           //!< [IN] WAV file name
 );
+size_t WAV_save_floatsEx (
+    const float         *x,                 //!< [IN] Buffer with data in the range [-1; +1)
+    size_t              size,               //!< samples to write
+    const TCHAR         *file_name,         //!< [IN] WAV file name
+    const pcm_format_t  fmt                 //!< PCM format
+);
+size_t WAV_save_floats (
+    const float         *x,                 //!< [IN] Buffer with data in the range [-1; +1)
+    size_t              size,               //!< samples to write
+    const TCHAR         *file_name          //!< [IN] WAV file name
+);
+
+
+
+size_t WAV_save_doubles2Ex (
+    const double        *x0,                //!< [IN] Buffer with left channel data in the range [-1; +1)
+    const double        *x1,                //!< [IN] Buffer with right channle data in the range [-1; +1)
+    int                 step,               //!< step between samples in the channes
+    size_t              size,               //!< samples to write
+    const TCHAR         *file_name,         //!< [IN] WAV file name
+    const pcm_format_t  fmt                 //!< PCM format
+    );
+size_t WAV_save_doubles_stereo (
+    const double        *x0,                //!< [IN] Buffer with left channel data in the range [-1; +1)
+    const double        *x1,                //!< [IN] Buffer with right channle data in the range [-1; +1)
+    int                 step,               //!< step between samples in the channes
+    size_t              size,               //!< samples to write
+    const TCHAR         *file_name          //!< [IN] WAV file name
+    );
 
 /**
 *   Allocate and read WAV file data as normalized floating-point.
 *   @return data buffer
+*   Example:
+    int size;
+    pcm_format_t fmt;
+    double * pcm = WAV_load_doubles(_T("signal.wav"), &size, &fmt);
 */
 double * WAV_load_doubles (
     const TCHAR * file_name,                //!< [IN] WAV file name

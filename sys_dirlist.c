@@ -10,8 +10,190 @@
 */
 
 #include "sys_dirlist.h"
+
+#ifdef _WIN32
 #include <windows.h>
 #include <shlwapi.h>                // needed for StrCmpI
+#else
+//#include "msdirent.h"
+#include <dirent.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+
+
+
+#include <stdio.h>
+
+#endif
+
+#ifndef _WIN32
+#define StrCmpI strcmp
+#define StrCmpNI strncmp
+#define CSLASH '/'
+#define SSLASH "/"
+#else
+#define CSLASH '\\'
+#define SSLASH "\\"
+#endif
+
+#if 0
+/* public domain Simple, Minimalistic, making list of files and directories
+ *	©2017 Yuichiro Nakada
+ *
+ * Basic usage:
+ *	int num;
+ *	LS_LIST *ls = ls_dir("dir/", LS_RECURSIVE|LS_RANDOM, &num);
+ * */
+
+
+#define LS_RECURSIVE	1
+#define LS_RANDOM	2
+
+typedef struct {
+	int status;
+	char d_name[PATH_MAX];
+} LS_LIST;
+
+int ls_count_dir(char *dir, int flag)
+{
+	DIR *dp;
+	struct dirent *entry;
+	struct stat statbuf;
+
+	if (!(dp = opendir(dir))) {
+		perror("opendir");
+		return 0;
+	}
+	char *cpath = getcwd(0, 0);
+	chdir(dir);
+
+	int i=0;
+	while ((entry = readdir(dp))) {
+		if (!strcmp(".", entry->d_name) || !strcmp("..", entry->d_name)) continue;
+
+		if (flag & LS_RECURSIVE) {
+			stat(entry->d_name, &statbuf);
+			if (S_ISDIR(statbuf.st_mode)) {
+				char path[PATH_MAX];
+				sprintf(path, "%s/%s", dir, entry->d_name);
+				i += ls_count_dir(path, flag);
+			}
+		}
+
+		i++;
+	}
+
+	closedir(dp);
+	chdir(cpath);
+	free(cpath);
+
+	return i;
+}
+	
+int ls_seek_dir(char *dir, LS_LIST *ls, int flag)
+{
+	DIR *dp;
+	struct dirent *entry;
+	struct stat statbuf;
+	char buf[PATH_MAX];
+
+	if (!(dp = opendir(dir))) {
+		perror("opendir");
+		printf("%s\n", dir);
+		return 0;
+	}
+	char *cpath = getcwd(0, 0);
+	chdir(dir);
+
+	int i=0;
+	while ((entry = readdir(dp))) {
+		if (!strcmp(".", entry->d_name) || !strcmp("..", entry->d_name)) continue;
+
+		sprintf(buf, "%s/%s", dir, entry->d_name);
+		strcpy((ls+i)->d_name, buf);
+
+		stat(entry->d_name, &statbuf);
+		if (S_ISDIR(statbuf.st_mode)) {
+			(ls+i)->status = 1;
+
+			//if (flag & LS_RECURSIVE) i += ls_seek_dir(buf, ls+i+1, flag);
+			if (flag & LS_RECURSIVE) i += ls_seek_dir(buf, ls+i, flag);
+		} else {
+			(ls+i)->status = 0;
+			i++;
+		}
+		//i++;
+	}
+
+	closedir(dp);
+	chdir(cpath);
+	free(cpath);
+
+	return i;
+}
+
+int ls_comp_func(const void *a, const void *b)
+{
+	return (strcmp((char*)(((LS_LIST*)a)->d_name), (char*)(((LS_LIST*)b)->d_name)));
+}
+
+LS_LIST *ls_dir(char *dir, int flag, int *num)
+{
+	int n = ls_count_dir(dir, flag);
+	if (!n) {
+		fprintf(stderr, "No file found [%s]!!\n", dir);
+		return 0;
+	}
+
+	LS_LIST *ls = (LS_LIST *)calloc(n, sizeof(LS_LIST));
+	if (!ls) {
+		perror("calloc");
+		return 0;
+	}
+
+	if (!ls_seek_dir(dir, ls, flag)) return 0;
+
+	if (flag & LS_RANDOM) {
+#ifdef RANDOM_H
+		xor128_init(time(NULL));
+#else
+		srand(time(NULL));
+#endif
+		for (int i=0; i<n; i++) {
+#ifdef RANDOM_H
+			int a = xor128()%n;
+#else
+			int a = rand()%n;
+#endif
+			LS_LIST b = ls[i];
+			ls[i] = ls[a];
+			ls[a] = b;
+		}
+	} else {
+		qsort(ls, n, sizeof(LS_LIST), ls_comp_func);
+	}
+
+	*num = n;
+	return ls;
+}
+
+#include <ctype.h>
+char *findExt(char *path)
+{
+	static char ext[10];
+	char *e = &ext[9];
+	*e-- = 0;
+	int len = strlen(path)-1;
+	for (int i=len; i>len-9; i--) {
+		if (path[i] == '.' ) break;
+		*e-- = tolower(path[i]);
+	}
+	return e+1;
+}
+#endif
+
 #include <ctype.h>
 #include <assert.h>
 
@@ -35,7 +217,7 @@ typedef struct
 /**
 *   recursive merge sorting for strings
 */
-static void merge_sort_kernel(void* a[], void* s[], size_t n, int (*comp)(const void *, const void *))
+static void merge_sort_kernel(void* a[], void* s[], size_t n, int (*fn_comp)(const void *, const void *))
 {
     size_t m = n >> 1;
     size_t i, j, k;
@@ -45,18 +227,18 @@ static void merge_sort_kernel(void* a[], void* s[], size_t n, int (*comp)(const 
         for (i = 1; i < n; i++) 
         {
             void* tmp = a[i];
-            for (j = i-1; (ptrdiff_t)j >= 0 && comp(tmp, a[j]) < 0; j--) a[j+1] = a[j];
+            for (j = i-1; (ptrdiff_t)j >= 0 && fn_comp(tmp, a[j]) < 0; j--) a[j+1] = a[j];
             a[j+1] = tmp;
         }
     }
     else
     {
         memcpy(s, a, m*sizeof(int));
-        merge_sort_kernel(s, a, m, comp);
-        merge_sort_kernel(b, a, n - m, comp);
+        merge_sort_kernel(s, a, m, fn_comp);
+        merge_sort_kernel(b, a, n - m, fn_comp);
         for (i = 0, j = m, k = 0; i < m && j < n;)
         {
-            a[k++] = comp(s[i] , a[j])<0 ? s[i++] : a[j++];
+            a[k++] = fn_comp(s[i] , a[j])<0 ? s[i++] : a[j++];
         }
         while (i < m) a[k++] = s[i++];
     }
@@ -65,12 +247,12 @@ static void merge_sort_kernel(void* a[], void* s[], size_t n, int (*comp)(const 
 /**
 *   string sorting
 */
-static void sort_ptrs(void* a[], size_t n, int (*comp)(const void *, const void *))
+static void sort_ptrs(void* a[], size_t n, int (*fn_comp)(const void *, const void *))
 {
     void**s = malloc(n/2*sizeof(void*));
     if (s)
     {
-        merge_sort_kernel(a, s, n, comp);
+        merge_sort_kernel(a, s, n, fn_comp);
         free(s);
     }
 }
@@ -79,27 +261,17 @@ static void sort_ptrs(void* a[], size_t n, int (*comp)(const void *, const void 
 /*                WIN32_FIND_DATA support functions                     */
 /************************************************************************/
 
-/**
-*   Return 1 if special folder '.' or '..' is found
-*/
-static int fd_is_dot_folder (const WIN32_FIND_DATA * fd)
-{
-    return 
-        (fd->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
-         fd->cFileName[0] == '.' &&
-        (fd->cFileName[1] == 0 || 
-            (fd->cFileName[1] == '.' && fd->cFileName[2] == 0));
-}
+#ifdef _WIN32
 
 /**
 *   Return file size
 */
 static __int64 fd_size (const WIN32_FIND_DATA * fd)
 {
-    ULARGE_INTEGER  fileSize;
-    fileSize.LowPart = fd->nFileSizeLow; 
-    fileSize.HighPart = fd->nFileSizeHigh; 
-    return fileSize.QuadPart;
+    ULARGE_INTEGER  size;
+    size.LowPart = fd->nFileSizeLow; 
+    size.HighPart = fd->nFileSizeHigh; 
+    return size.QuadPart;
 }
 
 /**
@@ -107,9 +279,12 @@ static __int64 fd_size (const WIN32_FIND_DATA * fd)
 */
 static __int64 fd_last_write_time (const WIN32_FIND_DATA * fd)
 {
-    __int64 fileTime;
-    fileTime =  *(__int64*)&fd->ftLastWriteTime.dwLowDateTime;
-    return fileTime;
+    return *(__int64*)&fd->ftLastWriteTime.dwLowDateTime;
+}
+
+static __int64 fd_creation_time (const WIN32_FIND_DATA * fd)
+{
+    return *(__int64*)&fd->ftCreationTime.dwLowDateTime;
 }
 
 /**
@@ -120,6 +295,108 @@ int DIR_is_file (const TCHAR * file_name)
     long attr = GetFileAttributes(file_name);
     return attr != ~0u && !(attr & FILE_ATTRIBUTE_DIRECTORY);
 }
+
+/**
+*   Return 1 if dir_name is a directory, 0 if it is file or not exist
+*/
+int DIR_is_directory (const TCHAR * dir_name)
+{
+    long attr = GetFileAttributes(dir_name);
+    return attr != ~0u && (attr & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+static dir_entry_t * new_dir_entry(WIN32_FIND_DATA * fd, dir_entry_t * parent)
+{
+    dir_entry_t * entry;
+    size_t name_lenght = _tcslen(fd->cFileName);
+    entry = calloc(1, sizeof(*entry) + name_lenght*sizeof(TCHAR));
+    if (entry)
+    {
+        entry->last_write_time = fd_last_write_time(fd);
+        entry->creation_time   = fd_creation_time(fd);
+        entry->size = fd_size(fd);
+        entry->is_folder = fd->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY;
+        entry->is_readonly = fd->dwFileAttributes & FILE_ATTRIBUTE_READONLY;
+        entry->attributes = fd->dwFileAttributes;
+        entry->name_len = name_lenght;
+        entry->parent = parent;
+        memcpy(entry->name, fd->cFileName, (name_lenght + 1)*sizeof(TCHAR));
+    }
+    return entry;
+}
+
+#else
+
+/**
+*   Return file size
+*/
+static __int64 fd_size (const struct stat * fd)
+{
+    return fd->st_size;
+}
+
+/**
+*   Return file last write time 
+*/
+static __int64 fd_last_write_time (const struct stat * fd)
+{
+    return *(__int64*)&fd->st_mtime;
+}
+
+static __int64 fd_creation_time (const struct stat * fd)
+{
+    return *(__int64*)&fd->st_ctime;
+}
+
+/**
+*   Return 1 if file_name is a file, 0 if it is directory or not exist
+*/
+int DIR_is_file (const TCHAR * file_name)
+{
+    struct stat buffer;
+    if (!stat(file_name, &buffer))
+    {
+        return S_ISREG(buffer.st_mode);
+    }
+    return 0;
+}
+
+/**
+*   Return 1 if dir_name is a directory, 0 if it is file or not exist
+*/
+int DIR_is_directory (const TCHAR * dir_name)
+{
+    struct stat buffer;
+    if (!stat(dir_name, &buffer))
+    {
+        return S_ISDIR(buffer.st_mode);
+    }
+    return 0;
+}
+
+static dir_entry_t * new_dir_entry(const struct stat * fd, dir_entry_t * parent, const char * name)
+{
+    dir_entry_t * entry;
+    size_t name_lenght = strlen(name);
+    entry = calloc(1, sizeof(*entry) + name_lenght*sizeof(char));
+    if (entry)
+    {
+        entry->last_write_time = fd_last_write_time(fd);
+        entry->creation_time   = fd_creation_time(fd);
+        entry->size = fd_size(fd);
+        entry->is_folder = S_ISDIR(fd->st_mode);
+        entry->is_readonly = 0;
+        entry->attributes = fd->st_mode;
+        entry->name_len = name_lenght;
+        entry->parent = parent;
+        memcpy(entry->name, name, (name_lenght + 1)*sizeof(char));
+    }
+    return entry;
+}
+
+//typedef struct stat WIN32_FIND_DATA;
+#define WIN32_FIND_DATA struct stat 
+#endif
 
 /************************************************************************/
 /*                Path string processing support functions              */
@@ -171,7 +448,7 @@ TCHAR * PATH_ensure_terminating_separator(TCHAR * path)
     {
         if (!IS_SEPARATOR(path[len - 1]))
         {
-            path[len    ] = '\\';
+            path[len    ] = CSLASH;
             path[len + 1] = '\0';
         }
     }
@@ -219,22 +496,22 @@ static TCHAR * separate_path_mask(TCHAR * path, size_t bufsize, int is_single_fi
 /**
 *   return 1 if str matches with pattern pat. Code from C snippets.
 */
-static int patimat (const TCHAR *pat, const TCHAR *str)
+int PATH_mask_match (const TCHAR *glob, const TCHAR *str)
 {
 #ifdef RECURSIVE_GLOB
-      switch (*pat)
+      switch (*glob)
       {
       case '\0':    return !*str;
-      case '*' :    return patimat(pat+1, str) || *str && patimat(pat, str+1);
-      case '?' :    return *str && patimat(pat+1, str+1);
-      default  :    return (_totupper(*pat) == _totupper(*str)) && patimat(pat+1, str+1);
+      case '*' :    return PATH_mask_match(glob+1, str) || *str && PATH_mask_match(glob, str+1);
+      case '?' :    return *str && PATH_mask_match(glob+1, str+1);
+      default  :    return (_totupper(*glob) == _totupper(*str)) && PATH_mask_match(glob+1, str+1);
       }
 #else
     const TCHAR * s, * p;
     int star = 0;
 
 loopStart:
-    for (s = str, p = pat; *s; ++s, ++p) 
+    for (s = str, p = glob; *s; ++s, ++p) 
     {
         switch (*p) 
         {
@@ -242,9 +519,9 @@ loopStart:
                 break;
             case '*':
                 star = 1;
-                str = s, pat = p;
-                do { ++pat; } while (*pat == '*');
-                if (!*pat) return 1;
+                str = s, glob = p;
+                do { ++glob; } while (*glob == '*');
+                if (!*glob) return 1;
                 goto loopStart;
             default:
                 if (_totupper(*s) != _totupper(*p))
@@ -261,6 +538,72 @@ loopStart:
 #endif
 }
 
+static int glob_end(const TCHAR *glob)
+{
+    return (!*glob || *glob == '|');
+}
+static const TCHAR * glob_next(const TCHAR *glob)
+{
+    while (!glob_end(glob))
+    {
+        glob++;
+    }
+    return (*glob) ? (glob+1) : NULL ;
+}
+
+int PATH_multimask_match (const TCHAR *glob, const TCHAR *str)
+{
+    const TCHAR * s, * p;
+    int star;
+    const TCHAR *str0 = str;
+
+start_next_glob:
+    str = str0;
+    star = 0;
+    if (!glob)
+    {
+        return 0;
+    }
+
+loopStart:
+    for (s = str, p = glob; *s; ++s, ++p) 
+    {
+        switch (*p) 
+        {
+        case '?':
+            break;
+        case '*':
+            star = 1;
+            str = s, glob = p;
+            do { ++glob; } while (*glob == '*');
+            if (glob_end(glob)) 
+            {
+                return 1;
+            }
+            goto loopStart;
+        default:
+            if (_totupper(*s) != _totupper(*p))
+            {
+                if (!star) 
+                {
+                    glob = glob_next(glob);
+                    goto start_next_glob;
+                }
+                str++;
+                goto loopStart;
+            }
+            break;
+        }
+    }
+    while (*p == '*') ++p;
+    if (glob_end(p))
+    {
+        return 1;
+    }
+
+    glob = glob_next(glob);
+    goto start_next_glob;
+}
 
 /************************************************************************/
 /*                             Destructor's                             */
@@ -295,109 +638,151 @@ void DIR_close(dir_directory_t * dir)
 /*                            Constructors                              */
 /************************************************************************/
 
-static dir_entry_t * new_dir_entry(WIN32_FIND_DATA * fd, dir_entry_t * parent)
+int dir_add(dir_directory_t * dir, dir_scan_params_t * params, dir_entry_t * parent, dir_entry_t  *** tail, dir_entry_t * entry)
 {
-    dir_entry_t * entry;
-    size_t name_lenght = _tcslen(fd->cFileName);
-    entry = calloc(1, sizeof(*entry) + name_lenght*sizeof(TCHAR));
+    int code = E_DIR_CONTINUE;
     if (entry)
     {
-        entry->last_write_time = fd_last_write_time(fd);
-        entry->size = fd_size(fd);
-        entry->is_folder = fd->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY;
-        entry->name_len = name_lenght;
-        entry->parent = parent;
-        memcpy(entry->name, fd->cFileName, (name_lenght + 1)*sizeof(TCHAR));
+        if (params->on_item_callback)
+        {
+            memcpy(params->path_end, entry->name, (entry->name_len + 1)*sizeof(TCHAR));            // "path\" += "directory" or "path\" += "filename"
+
+            code = params->on_item_callback(params->path, entry, params->token);
+            if (code == E_DIR_SKIP)
+            {
+                free(entry);
+                return code;
+            }
+            if (code == E_DIR_ABORT)
+            {
+                free(entry);
+                return code;
+            }
+        }
+
+        **tail = entry;
+        *tail = &entry->link;
+
+        dir->items_count++;
+        if (!entry->is_folder)
+        {
+            dir->files_count++;
+            dir->files_size += entry->size;
+            if (parent)
+            {
+                parent->size += entry->size;
+            }
+        }
     }
-    return entry;
+    return code;
 }
 
+int is_dots_name(const TCHAR * p)
+{
+    return (p[0] == '.' && (p[1] == 0 || (p[1] == '.' && p[2] == 0)));
+}
 
 static dir_scan_callback_action_t dir_scan(dir_directory_t * dir, dir_entry_t ** items, dir_scan_params_t * params, dir_entry_t * parent)
 {
-    HANDLE              ffh;
-    WIN32_FIND_DATA     fd;
     dir_entry_t        * entry = NULL;   // to make compiler happy
     dir_entry_t       ** tail = items;
     dir_scan_callback_action_t code;
+#ifdef _WIN32
+    HANDLE              ffh;
+    WIN32_FIND_DATA     fd;
+#define IS_DIR(fd) (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+#else
+    DIR *dp;
+    struct dirent *_entry;
+#define IS_DIR(fd) (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+    int len = strlen(params->path);
+#endif
 
     *items = NULL;
 
+#ifdef _WIN32
+
     // Fill list of entries in this folder
-    ffh = FindFirstFile(params->path, &fd);
-    if (ffh != INVALID_HANDLE_VALUE)
+    if (INVALID_HANDLE_VALUE == (ffh = FindFirstFile(params->path, &fd)))
+#else
+//printf("zzzzzzz %s %d\n", params->path, len);
+    if (len > 2 && params->path[len-1] == '*' && params->path[len-2] == '/')
     {
-        do
+        params->path[len-2] = 0;
+    }
+    if (!len) params->path[0] = '.', params->path[1] = 0;;
+//printf("%s\n", params->path);
+        
+    if (!(dp = opendir(params->path)))
+#endif
+    {
+        return E_DIR_CONTINUE;
+    }
+
+#ifdef _WIN32
+    do
+    {
+        if (is_dots_name(fd.cFileName))
         {
-            if (!fd_is_dot_folder(&fd))
+            continue;
+        }
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && 
+            params->mask[0] && !PATH_mask_match(params->mask, fd.cFileName)) 
+        {
+            continue;
+        }
+
+        if (E_DIR_ABORT == dir_add(dir, params, parent, &tail, new_dir_entry(&fd, parent)))
+            break;
+    } while (FindNextFile(ffh, &fd));
+    FindClose(ffh);
+#else
+    while (_entry = readdir(dp))
+    {
+        struct stat fd;
+        stat(_entry->d_name, &fd);
+        
+        if (is_dots_name(_entry->d_name))
+        {
+            continue;
+        }
+        if (!S_ISDIR(fd.st_mode) && 
+            params->mask[0] && !PATH_mask_match(params->mask, _entry->d_name)) 
+        {
+            continue;
+        }
+
+        if (E_DIR_ABORT == dir_add(dir, params, parent, &tail, new_dir_entry(&fd, parent, _entry->d_name)))
+        {
+            break;
+        }
+        
+    } 
+    closedir(dp);
+#endif
+
+    // Initialize sub-folder entries recursively, call callbacks
+    for (entry = *items; entry; entry = entry->link)
+    {
+        if (entry->is_folder)
+        {
+            memcpy(params->path_end , entry->name, (entry->name_len + 1)*sizeof(TCHAR));        // "path\" += "directory" or "path\" += "filename"
+            _tcscpy(params->path_end + entry->name_len, _T(SSLASH)_T("*"));                   // Append mask
+            params->path_end += entry->name_len + 1;                             // Set name pointer to * character
+            code = dir_scan(dir, &entry->items, params, entry);                // Scan folder (recursion) with "path\directory\"
+            if (parent)
             {
-                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && 
-                    params->mask[0] && 
-                    !patimat(params->mask, fd.cFileName)) 
-                {
-                    continue;
-                }
-                entry = new_dir_entry(&fd, parent);
-                if (entry)
-                {
-                    if (params->on_item_callback)
-                    {
-                        memcpy(params->path_end, entry->name, (entry->name_len + 1)*sizeof(TCHAR));            // "path\" += "directory" or "path\" += "filename"
-
-                        code = params->on_item_callback(params->path, entry, params->token);
-                        if (code == E_DIR_SKIP)
-                        {
-                            free(entry);
-                            continue;
-                        }
-                        if (code == E_DIR_ABORT)
-                        {
-                            free(entry);
-                            FindClose(ffh);
-                            return E_DIR_ABORT;
-                        }
-                    }
-                    
-                    *tail = entry;
-                    tail = &entry->link;
-
-                    dir->items_count++;
-                    if (!entry->is_folder)
-                    {
-                        dir->files_count++;
-                        dir->files_size += entry->size;
-                        if (parent)
-                        {
-                            parent->size += entry->size;
-                        }
-                    }
-                }
+                parent->size += entry->size;
             }
-        } while (FindNextFile(ffh, &fd));
-        FindClose(ffh);
-    
-        // Initialize sub-folder entries recursively, call callbacks
-        for (entry = *items; entry; entry = entry->link)
-        {
-            if (entry->is_folder)
+            params->path_end -= entry->name_len + 1;                             // Cut any junk after root path
+            if (code == E_DIR_ABORT)
             {
-                memcpy(params->path_end , entry->name, (entry->name_len + 1)*sizeof(TCHAR));        // "path\" += "directory" or "path\" += "filename"
-                _tcscpy(params->path_end + entry->name_len, _T("\\*"));                   // Append mask
-                params->path_end += entry->name_len + 1;                             // Set name pointer to * character
-                code = dir_scan(dir, &entry->items, params, entry);                // Scan folder (recursion) with "path\directory\"
-                if (parent)
-                {
-                    parent->size += entry->size;
-                }
-                params->path_end -= entry->name_len + 1;                             // Cut any junk after root path
-                if (code == E_DIR_ABORT)
-                {
-                    return E_DIR_ABORT;
-                }
+                return E_DIR_ABORT;
             }
         }
     }
     return E_DIR_CONTINUE;
+
 }
 
 static void setup_scan_params(
@@ -420,7 +805,9 @@ static void setup_scan_params(
     if (!dir->is_single_file)
     {
         // Append '*' mask for OS directory scan function
+#ifdef _WIN32
         _tcscpy(par->path_end, _T("*"));
+#endif
     }    
 }
 
@@ -456,7 +843,7 @@ size_t DIR_get_root_relative_path(const dir_entry_t * item, TCHAR * path)
     if (item->parent)
     {
         len = DIR_get_root_relative_path(item->parent, path);
-        path[len++] = '\\';
+        path[len++] = CSLASH;
     }
     memcpy(path + len, item->name, (item->name_len + 1)*sizeof(TCHAR));
     return len + item->name_len;
@@ -478,16 +865,20 @@ static dir_scan_callback_action_t for_each_recursion(
     end = root_path + _tcslen(root_path);
     for (ptr = items; ptr; ptr = ptr->link)
     {
+        int action;
         _tcscpy(end, ptr->name);   
-        // TODO: add skip mode
-        if (E_DIR_ABORT == on_item_callback(root_path, ptr, token))
+
+        action = on_item_callback(root_path, ptr, token);
+
+        if (E_DIR_ABORT == action)
         {
             *end = 0;
             return E_DIR_ABORT;
         }
-        if (ptr->is_folder)
+
+        if (ptr->is_folder && E_DIR_SKIP != action)
         {
-            _tcscat(end, _T("\\"));
+            _tcscat(end, _T(SSLASH));
             if (E_DIR_ABORT == for_each_recursion(root_path, ptr->items, on_item_callback, token))
             {
                 *end = 0;
@@ -530,6 +921,22 @@ void DIR_for_each(
     }
 }
 
+int DIR_for_each_in_folder(
+    TCHAR * path, 
+    dir_entry_t * fd, 
+    dir_scan_callback_action_t (*on_item_callback) (const TCHAR * path, dir_entry_t * fd, void * token),
+    void * token
+    )
+{
+    int status;
+    TCHAR * end = path + _tcslen(path);
+    _tcscat(end, _T(SSLASH));
+    assert(on_item_callback);
+
+    status = for_each_recursion(path, fd->items, on_item_callback, token);
+    *end = 0;
+    return status;
+}
 /************************************************************************/
 /*                            Sorting                                   */
 /************************************************************************/
@@ -608,7 +1015,7 @@ dir_entry_t **  DIR_new_index(
 )
 {
     dir_entry_t ** index;
-    index = malloc(dir->items_count * sizeof(void*));
+    index = malloc((dir->items_count+1) * sizeof(void*));
     if (index) switch (mode)
     {
     case E_DIR_SORT_FILES_AFTER_FOLDER:
@@ -625,6 +1032,7 @@ dir_entry_t **  DIR_new_index(
         free(index);
         index = NULL;
     }
+    if (index) index[dir->items_count] = NULL;
     return index;
 }
 
@@ -637,6 +1045,17 @@ dir_entry_t **  DIR_set_index(
     old_index = dir->index;
     dir->index = index;
     return old_index;
+}
+
+dir_entry_t ** DIR_rev_index(dir_directory_t * dir, dir_entry_t ** index)
+{
+    unsigned i;
+#define SWAP(datatype, a, b) { datatype _ = a; a = b; b = _; }
+    for (i = 0; i < dir->items_count/2; i++)
+    {
+        SWAP(dir_entry_t *, index[i], index[dir->items_count-1-i]);
+    }
+    return index;
 }
 
 /************************************************************************/
@@ -689,12 +1108,16 @@ int DIR_sort_time_descending(const dir_entry_t* pp1, const dir_entry_t* pp2)
 
 int DIR_sort_path_descending(const dir_entry_t* pp1, const dir_entry_t* pp2)
 {
-    static TCHAR path[2][DIR_MAX_PATH];    // too big array for stack
+    /*static */TCHAR path[2][DIR_MAX_PATH];    // too big array for stack
     size_t len[2];
+    if (!pp2 && !pp1) return 0;
+    if (!pp2) return -1;
+    if (!pp1) return 1;
     DIR_get_root_relative_path(pp1, path[0]);
     DIR_get_root_relative_path(pp2, path[1]);
     len[0] = _tcslen(path[0]);
     len[1] = _tcslen(path[1]);
+
     if (len[0] < len[1] && StrCmpNI(path[0], path[1], (int)len[0]) == 0)
     {
         return -1;
@@ -712,11 +1135,11 @@ int DIR_sort_path_descending(const dir_entry_t* pp1, const dir_entry_t* pp2)
 
 static int create_dir_if_not_exist(TCHAR * path, TCHAR * term)
 {
-    TCHAR terminator;
+#ifdef _WIN32
     BOOL result;
     long  attr;
 
-    terminator = *term;
+    TCHAR terminator = *term;
     *term = '\0';
     attr = GetFileAttributes(path);
     if (attr == ~0u )
@@ -730,15 +1153,46 @@ static int create_dir_if_not_exist(TCHAR * path, TCHAR * term)
     *term = terminator;
 
     return result;
+#else
+    int mode = 0;// TODO: default mode
+    struct stat            st;
+    int             status = 0;
+    TCHAR terminator = *term;
+    *term = '\0';
+
+    if (stat(path, &st) != 0)
+    {
+        /* Directory does not exist. EEXIST for race condition */
+        if (mkdir(path, mode) != 0 /*&& errno != EEXIST*/)
+            status = -1;
+    }
+    else if (!S_ISDIR(st.st_mode))
+    {
+//        errno = ENOTDIR;
+        status = -1;
+    }
+    *term = terminator;
+
+    return(status);
+#endif
 }
 
 
-int DIR_force_directory(TCHAR * path)
+static TCHAR * tchar_clone(const TCHAR * src)
+{
+    int len = _tcslen(src) + 1;
+    TCHAR * dst = (TCHAR *)malloc(len*sizeof(TCHAR));
+    if (dst) memcpy(dst, src, len*sizeof(TCHAR));
+    return dst;
+}
+
+int DIR_force_directory(TCHAR * _path)
 {
     TCHAR * p;
     TCHAR term = '\0';
     size_t len;
     int result = 1;
+    TCHAR * path = tchar_clone(_path);
     len = _tcslen(path);
     p = path + len;
     
@@ -775,25 +1229,120 @@ int DIR_force_directory(TCHAR * path)
 
     result = create_dir_if_not_exist(path, p);
     *p++ = term;
+    free(path);
     return result;
 }
 
-TCHAR * PATH_compact_path(TCHAR * compact_path, const TCHAR * path, int len)
+/**
+*   Change "looooooong/path" to "loo.../path"
+*/
+TCHAR * PATH_compact_path(TCHAR * compact_path, const TCHAR * path, size_t limit)
 {
+#if 1
+    size_t len, i;
+    if (!path) return _T("{NULL}");
+    len = _tcslen(path);
+    limit--; // terminator
+    if (len > limit)
+    {
+        for (i = 0; i < limit/4; i++)
+        {
+            int c = path[i];
+            compact_path[i] = (TCHAR)c;
+            if (c == '\\' || c == '/') {i++; break;}
+        }
+        _tcscpy(compact_path + i, _T("..."));
+        _tcscat (compact_path, path + len - limit + i + 3);
+    }
+    else
+    {
+        _tcscpy(compact_path, path);
+    }
+#else
     *compact_path = '\0';
-    PathCompactPathEx(compact_path, path, len, 0/*flags not used*/);
+    PathCompactPathEx(compact_path, path, limit, 0/*flags not used*/);
+#endif
     return compact_path;
 }
 
-unsigned long DIR_files_count(dir_entry_t * fd)
+
+
+
+unsigned long DIR_files_count(dir_entry_t * fd, int recursive)
 {
     unsigned long count = 0;
     for (fd = fd->items; fd; fd = fd->link)
     {
         count += !fd->is_folder;
+        if (fd->is_folder && recursive)
+        {
+            count += DIR_files_count(fd, recursive);
+        }
     }
     return count;
 }
+
+
+/************************************************************************/
+/*                File mask list support functions                      */
+/************************************************************************/
+
+
+void DIR_file_mask_list_close(file_mask_t * list)
+{
+    file_mask_t * next;
+    for (; list != NULL; list = next)
+    {
+        next = list->link;
+        free(list);
+    }
+}
+
+static int file_mask_list_append_mask(file_mask_t ** list, const TCHAR * mask, int is_include)
+{
+    file_mask_t * item = malloc(sizeof(file_mask_t) + _tcslen(mask)*sizeof(TCHAR));
+    if (item)
+    {
+        item->is_include = is_include;
+        _tcscpy(item->mask, mask);
+        item->link = *list;
+        *list = item;
+        return 1;
+    }
+    return 0;
+}
+
+int DIR_file_mask_list_add_include_mask(file_mask_t ** list, const TCHAR * mask)
+{
+    return file_mask_list_append_mask(list, mask, 1);
+}
+
+int DIR_file_mask_list_add_exclude_mask(file_mask_t ** list, const TCHAR * mask)
+{
+    return file_mask_list_append_mask(list, mask, 0);
+}
+
+
+int DIR_file_mask_list_match_name(file_mask_t * list, const TCHAR * file_name)
+{
+    int orr_match = 0;
+    int have_incl = 0;
+    for (; list != NULL; list = list->link)
+    {
+        // If no include mask specified, assume that any file name match.
+        have_incl |= list->is_include;
+        if (PATH_mask_match(list->mask, file_name))
+        {
+            if (!list->is_include)
+            {
+                return 0;
+            }
+            orr_match = 1;
+        }
+    }
+    return orr_match || !have_incl;
+}
+
 
 #if DIR_ENABLE_DIR3
 /** 
@@ -1063,7 +1612,7 @@ void myPrintFolder(const TCHAR * path, dir_entry_t * fd, void * token)
     _tprintf("\n%-30s\t<DIR>", pretty_print_path(pretty_path, path, 30));
 }
 */
-void my_print_dir_item(const TCHAR * path, dir_entry_t * fd, void * token)
+dir_scan_callback_action_t my_print_dir_item(const TCHAR * path, dir_entry_t * fd, void * token)
 {
     static int count = 0;
     if (fd->is_folder)
@@ -1072,7 +1621,7 @@ void my_print_dir_item(const TCHAR * path, dir_entry_t * fd, void * token)
     }
     else
     {
-        _tprintf("\n%-30s\t%I64d", pretty_print_path(pretty_path, path, 30), fd->Size);
+        _tprintf("\n%-30s\t%I64d", pretty_print_path(pretty_path, path, 30), fd->size);
     }
     if (count++ > 5)
     {
@@ -1098,7 +1647,7 @@ _tmain(int argc, TCHAR *argv[])
     //DIR_set_index(&dir, DIR_new_index(&dir, DIR_sort_size_descending, E_DIR_SORT_IN_FOLDERS));
     
     //_tprintf("\n=======================\n%d items; size %I64d", DIR_items_count(&dir), DIR_totalSize(&dir));
-    _tprintf("\n=======================\n%d items; size %I64d", dir.ulItemsCount, dir.llFilesSize);
+    _tprintf("\n=======================\n%d items; size %I64d", dir.items_count, dir.files_size);
     _tprintf("\nclocks %d\n=======================", clock() - t);
     DIR_for_each(&dir,my_print_dir_item, NULL);
     DIR_close(&dir);

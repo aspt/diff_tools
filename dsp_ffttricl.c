@@ -678,6 +678,21 @@ void tricl_fftconv_mulpw(real * __restrict DAT1, real * __restrict DAT2, int n)
         DAT1[i * 2 + 1] = xr * DAT2[i * 2 + 1] + xi * DAT2[i * 2];
     }
 }
+void tricl_fftconv_mulpw_conj(real * __restrict DAT1, real * __restrict DAT2, int n)
+{
+    real xr, xi;
+    int i;
+
+    assert(0 <= n && n <= 29);
+
+    for (i = 0; i < 1 << n; i++) {
+        xr = DAT1[i * 2];
+        xi = DAT1[i * 2 + 1];
+
+        DAT1[i * 2] = xr * DAT2[i * 2] + xi * DAT2[i * 2 + 1];
+        DAT1[i * 2 + 1] =-xr * DAT2[i * 2 + 1] + xi * DAT2[i * 2];
+    }
+}
 
 /**T
 The function {\em tricl\_fftconv\_sqrpw}($DAT$, $n$) squares $2^n$ 
@@ -778,37 +793,49 @@ void mulr4(real *a,real *b)
   a[3] = t3;
 }
 
+
 void tricl_fftconv_mulpr_conj(real * __restrict DAT1, real * __restrict DAT2, int n)
 {
-    real xr, xi;
     int i;
 
     assert(0 <= n && n <= 29);
     if (n >= 1) {mulr2(DAT1,DAT2); }
 
     for (i = 1; i < 1 << n >> 1; i++) {
-        xr = DAT1[i * 2];
-        xi = DAT1[i * 2 + 1];
-
-        DAT1[i * 2] = xr * DAT2[i * 2] + xi * DAT2[i * 2 + 1];
-        DAT1[i * 2 + 1] = -xr * DAT2[i * 2 + 1] + xi * DAT2[i * 2];
+        real xr = DAT1[i * 2];
+        real xi = DAT1[i * 2 + 1];
+        real yr =  xr * DAT2[i * 2]     + xi * DAT2[i * 2 + 1];
+        real yi = -xr * DAT2[i * 2 + 1] + xi * DAT2[i * 2];
+        DAT1[i * 2] = yr;
+        DAT1[i * 2 + 1] = yi;
+//        xr = DAT1[i * 2];
+//        xi = DAT1[i * 2 + 1];
+//
+//        DAT1[i * 2] = xr * DAT2[i * 2] + xi * DAT2[i * 2 + 1];
+//        DAT1[i * 2 + 1] = -xr * DAT2[i * 2 + 1] + xi * DAT2[i * 2];
     }
 }
 
+
 void tricl_fftconv_mulpr(real * __restrict DAT1, real * __restrict DAT2, int n)
 {
-    real xr, xi;
     int i;
 
     assert(0 <= n && n <= 29);
     if (n >= 1) {mulr2(DAT1,DAT2); }
 
     for (i = 1; i < 1 << n >> 1; i++) {
-        xr = DAT1[i * 2];
-        xi = DAT1[i * 2 + 1];
-
-        DAT1[i * 2] = xr * DAT2[i * 2] - xi * DAT2[i * 2 + 1];
-        DAT1[i * 2 + 1] = xr * DAT2[i * 2 + 1] + xi * DAT2[i * 2];
+        real xr = DAT1[i * 2];
+        real xi = DAT1[i * 2 + 1];
+        real yr = xr * DAT2[i * 2]     - xi * DAT2[i * 2 + 1];
+        real yi = xr * DAT2[i * 2 + 1] + xi * DAT2[i * 2];
+        DAT1[i * 2] = yr;
+        DAT1[i * 2 + 1] = yi;
+//        xr = DAT1[i * 2];
+//        xi = DAT1[i * 2 + 1];
+//
+//        DAT1[i * 2] = xr * DAT2[i * 2] - xi * DAT2[i * 2 + 1];
+//        DAT1[i * 2 + 1] = xr * DAT2[i * 2 + 1] + xi * DAT2[i * 2];
     }
 }
 
@@ -1989,6 +2016,497 @@ void tricl_fft2dconv_mulpw(real * __restrict DAT1, real * __restrict DAT2, int n
 }
 
 
+/************************************************************************/
+/*      real spectrum analysis helpers                                  */
+/************************************************************************/ 
+
+typedef struct tricl_fft_real_spectr_t
+{
+    int log2n;
+    real * twid;
+    int  * perm;
+    real * spec;
+    real * temp;
+    real _[1];
+} tricl_fft_real_spectr_t;
+
+/**
+*   Allocate memory for spectrum analysis with tricl FFT
+*/
+tricl_fft_real_spectr_t * tricl_fft_real_spectr_mem_alloc(int n)
+{
+    int log2n, nfft;
+    tricl_fft_real_spectr_t * h;
+    for (log2n = 0; (1<<log2n) < n; log2n++) {/*no action*/}
+    nfft = 1<<log2n;
+    h = malloc(sizeof(tricl_fft_real_spectr_t) + (nfft * 4 + 2) * sizeof(real));
+    h->log2n = log2n;
+    h->twid = h->_;
+    h->temp = h->twid + nfft;
+    h->spec = h->temp + nfft;
+    h->perm = (int*)(h->spec + nfft + 2);
+    fftfreq_rtable((unsigned *)h->perm, nfft);
+    tricl_fft_makelut(h->twid, log2n);
+    return h;
+}
+
+/**
+*   Reorder complex spectrum after real-to-complex transform
+*/
+static void tricl_fft_r2c_reorder(const real x[/*nfft*/], const int *permr, int nfft, real y[/*nfft+2*/])
+{
+    int i;
+    for (i = 2; i < nfft; i += 2)
+    {
+        int j = permr[i];
+        if (j >= nfft/2)
+        {
+            // Big permutation index indicates conjugate
+            j = nfft - j;
+            y[2*j]   = x[i];
+            y[2*j+1] = -x[i+1];
+        }
+        else
+        {
+            y[2*j]   = x[i];
+            y[2*j+1] = x[i+1];
+        }
+    }
+    y[0]      = x[0];
+    y[1]      = 0;
+    y[nfft]   = x[1]; 
+    y[nfft+1] = 0;
+}
+
+/**
+*   Produce power spectrum after real-to-complex transform
+*/
+static void tricl_fft_r2ps_reorder(const real x[/*nfft*/], const int *permr, int nfft, real power[/*nfft/2+1*/])
+{
+    int i;
+    for (i = 2; i < nfft; i += 2)
+    {
+        int j = permr[i];
+        if (j >= nfft/2)
+        {
+            // Big permutation index indicates conjugate
+            j = nfft - j;
+        }
+        power[j]   = x[i]*x[i] + x[i+1]*x[i+1];
+    }
+    power[0]      = x[0]*x[0];
+    power[nfft/2] = x[1]*x[1]; 
+}
+
+real * tricl_fft_r2spec(tricl_fft_real_spectr_t * h, const real * x)
+{
+    tricl_fft_r2c_preproc(x, h->log2n, h->temp);
+    tricl_fft_r2c        (h->temp, h->log2n, h->twid);
+    tricl_fft_r2c_reorder(h->temp, h->perm, 1<<h->log2n, h->spec);
+    return h->spec;
+}
+real * tricl_fft_r2power   (tricl_fft_real_spectr_t * h, const real * x)
+{
+    tricl_fft_r2c_preproc(x, h->log2n, h->temp);
+    tricl_fft_r2c        (h->temp, h->log2n, h->twid);
+    tricl_fft_r2ps_reorder(h->temp, h->perm, 1<<h->log2n, h->spec);
+    return h->spec;
+}
+
+void tricl_fft_power2db(const real * x, real * db, int n, double dbm0, double floor)
+{
+    int i;
+    double db_floor = 10*log10(floor/dbm0);
+    for (i = 0; i < n; i++)
+    {
+        if (x[i] < floor) db[i] = db_floor;
+        else              db[i] = 10*log10(x[i]/dbm0);
+    }
+}
+
+static int tricl_fft_bluestein_logsize(int n)
+{
+    int i, log2n = 1;
+    for (i = 2; i < n; i *= 2) {log2n++;}
+    return log2n + 1;
+}
+
+#define PI 3.14159265358979323846
+
+
+
+static real * tricl_fft_bluestein_chirp(int n, int sign)
+{
+    real * chirp = malloc(2*n * sizeof(real));
+    if (chirp)
+    {
+        int k;
+        for (k = 0; k < n; k++)
+        {
+            double phase = -sign* PI * (double)k*k / n;
+            double c = cos(phase);
+            double s = sin(phase);
+            chirp[2*k+0] = c;
+            chirp[2*k+1] = s;
+        }
+    }
+    return chirp;
+}
+static real * tricl_fft_bluestein_chirp_ex(int n, double freq_scalefactor)
+{
+    real * chirp = malloc(2*n * sizeof(real));
+    if (chirp)
+    {
+        int k;
+        for (k = 0; k < n; k++)
+        {
+            double phase = -1 * freq_scalefactor * PI * (double)k*k / n;
+            double c = cos(phase);
+            double s = sin(phase);
+            chirp[2*k+0] = c;
+            chirp[2*k+1] = s;
+        }
+    }
+    return chirp;
+}
+
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+
+
+
+void tricl_fft_chirpz_free(tricl_fft_chirpz_t * h)
+{
+#define FREE(x) if (x) free(x)
+    FREE(h->lut);
+    FREE(h->chirp_time1);
+    FREE(h->chirp_time2);
+    FREE(h->chirp_freq);
+    FREE(h);
+}
+
+tricl_fft_chirpz_t * tricl_fft_chirpz_alloc(int n, int m, const real a[2], const real w[2], real freq_scalefactor)
+{
+    // http://cms.edn.com/uploads/SourceCode/02sirin.txt
+    // https://github.com/ericmjonas/pychirpz/blob/master/README.md
+    tricl_fft_chirpz_t * h = malloc(sizeof(tricl_fft_chirpz_t));
+    if (h)
+    {
+        int k;
+        double w;
+        h->ntime = n;
+        h->mfreq = m;
+
+        h->log2nfft = tricl_fft_bluestein_logsize(n + m-1);
+        h->nfft = 1<<h->log2nfft;
+        h->lut = malloc(h->nfft * sizeof(real));
+        tricl_fft_makelut(h->lut, h->log2nfft);
+
+        h->chirp_time1 = tricl_fft_bluestein_chirp_ex(h->ntime, freq_scalefactor);
+        h->chirp_time2 = tricl_fft_bluestein_chirp_ex(h->mfreq, -freq_scalefactor);
+        h->chirp_freq = calloc(2*h->nfft, sizeof(real));
+
+        w = PI / h->ntime*freq_scalefactor;
+
+        for (k = 0; k < h->ntime; k++)
+        {
+            double phase = 1 * 1 * w * (double)k*k ;
+            h->chirp_time1[2*k+0] = cos(phase);
+            h->chirp_time1[2*k+1] = sin(phase);
+        }
+        for (k = 0; k < h->mfreq; k++)
+        {
+            double phase = 1 * 1 * w * (double)k*k;
+            h->chirp_time2[2*k+0] = cos(phase);
+            h->chirp_time2[2*k+1] = sin(phase);
+        }
+
+        for (k = 0; k < h->mfreq; k++)
+        {
+            double phase = -1 * 1 * w * (double)k*k;
+            h->chirp_freq[2*k+0] = cos(phase);
+            h->chirp_freq[2*k+1] = sin(phase);
+        }
+        for (k = h->nfft - h->ntime; k < h->nfft; k++)
+        {
+            double phase = -1 * 1 * w * (double)(h->nfft-k)*(h->nfft-k);
+            h->chirp_freq[2*k+0] = cos(phase);
+            h->chirp_freq[2*k+1] = sin(phase);
+        }
+
+        tricl_fft_fft(h->chirp_freq, h->log2nfft, h->lut);
+    }
+    return h;
+}
+
+
+void tricl_fft_chirpz(tricl_fft_chirpz_t * h, real * x, real  * out)
+{
+    int i, n = h->nfft;
+    real * xmod =  calloc(2*h->nfft,sizeof(real));
+
+    for (i = 0; i < h->ntime; i++)
+    {
+        double c = h->chirp_time1[2*i + 0];
+        double s = h->chirp_time1[2*i + 1];
+        xmod[2*i + 0] =   c*x[2*i] - s*x[2*i+1];
+        xmod[2*i + 1] =   s*x[2*i] + c*x[2*i+1];
+    }
+
+    tricl_fft_fft(xmod, h->log2nfft, h->lut);
+    tricl_fftconv_mulpw(xmod,  h->chirp_freq, h->log2nfft);
+    tricl_fft_ifft(xmod, h->log2nfft, h->lut);
+    tricl_fftconv_scale(xmod, h->log2nfft);
+
+    for (i = 0; i < h->mfreq; i++)
+    {
+        real re = xmod[2*i + 0];
+        real im = xmod[2*i + 1];
+        out[2*i + 0] = h->chirp_time2[2*i + 0] * re - h->chirp_time2[2*i + 1] * im;
+        out[2*i + 1] = h->chirp_time2[2*i + 0] * im + h->chirp_time2[2*i + 1] * re;
+    }
+    free(xmod);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+
+struct tricl_fft_bluestein_t
+{
+    int n;      // radix-2 transform size
+    int log2n;  // 
+    int ntime;
+    real * lut;
+    real * chirp;
+    real * chirpfreq;
+    real * scratch;
+};
+
+tricl_fft_bluestein_t * tricl_fft_bluestein_alloc(int n)
+{
+    tricl_fft_bluestein_t * h = malloc(sizeof(tricl_fft_bluestein_t));
+    if (h)
+    {
+        int i;
+        h->ntime = n;
+        h->log2n = tricl_fft_bluestein_logsize(n);
+        h->n = 1<<h->log2n;
+        h->lut = malloc(h->n * sizeof(real));
+        tricl_fft_makelut(h->lut, h->log2n);
+        h->chirp = tricl_fft_bluestein_chirp(h->ntime, +1);
+        h->chirpfreq = calloc(2*h->n, sizeof(real));
+        h->chirpfreq[0] = h->chirp[0];
+        h->chirpfreq[1] = h->chirp[1];
+        for (i = 1; i < h->ntime; i++)
+        {
+            int k = 2*i;
+            h->chirpfreq[2*h->n - k]     = h->chirpfreq[k]   = h->chirp[k];
+            h->chirpfreq[2*h->n - k + 1] = h->chirpfreq[k+1] = h->chirp[k+1];
+        }
+        tricl_fft_fft(h->chirpfreq, h->log2n, h->lut);
+        h->scratch = malloc(h->n*2 * sizeof(real));
+    }
+    return h;
+}
+
+void tricl_fft_bluestein_free(tricl_fft_bluestein_t * h)
+{
+    free(h->lut);
+    free(h->chirp);
+    free(h->chirpfreq);
+    free(h->scratch);
+    free(h);
+}
+
+void tricl_fft_bluestein_r2c(tricl_fft_bluestein_t * h, const real * x, real * out)
+{
+    int i;
+    memset(h->scratch, 0, h->n*2 * sizeof(real));
+    for (i = 0; i < h->ntime; i++)
+    {
+        h->scratch[2*i+0] = h->chirp[2*i+0]*x[i];
+        h->scratch[2*i+1] =-h->chirp[2*i+1]*x[i];
+    }
+    tricl_fft_fft(h->scratch, h->log2n, h->lut);
+    tricl_fftconv_mulpw(h->scratch,  h->chirpfreq, h->log2n);
+    tricl_fft_ifft(h->scratch, h->log2n, h->lut);
+    tricl_fftconv_scale(h->scratch, h->log2n);
+    for (i = 0; i < h->ntime/2+1; i++)
+    {
+        real re = h->scratch[2*i + 0];
+        real im = h->scratch[2*i + 1];
+        out[2*i + 0] = h->chirp[2*i + 0] * re + h->chirp[2*i + 1] * im;
+        out[2*i + 1] = h->chirp[2*i + 0] * im - h->chirp[2*i + 1] * re;
+    }
+}
+void tricl_fft_bluestein_c2r(tricl_fft_bluestein_t * h, const real * x, real * out)
+{
+    int i;
+    int nbins = h->ntime/2+1;
+
+    memset(h->scratch, 0, h->n*2 * sizeof(real));
+    for (i = 0; i < h->ntime; i++)
+    {
+        int k = (i < nbins ? i : h->ntime-i);
+        //int k = ((i < h->ntime/2+1) ? i : h->ntime-i +1-(h->ntime&1));
+        real re = x[2*k+0];
+        real im = x[2*k+1];
+        if (i < nbins)
+        {
+            im = -im;
+        }
+        h->scratch[2*i+0] = h->chirp[2*i+0]*re + h->chirp[2*i+1]*im;
+        h->scratch[2*i+1] = h->chirp[2*i+0]*im - h->chirp[2*i+1]*re;
+    }
+    tricl_fft_fft(h->scratch, h->log2n, h->lut);
+    tricl_fftconv_mulpw(h->scratch,  h->chirpfreq, h->log2n);
+    tricl_fft_ifft(h->scratch, h->log2n, h->lut);
+    tricl_fftconv_scale(h->scratch, h->log2n);
+    for (i = 0; i < h->ntime; i++)
+    {
+        real re = h->scratch[2*i + 0];
+        real im = h->scratch[2*i + 1];
+        out[i] = (h->chirp[2*i + 0] * re + h->chirp[2*i + 1] * im)/h->ntime;
+    }
+}
+
+void tricl_fft_bluestein(real * x, int xsize, int sign, real  * out)
+{
+    int logn = tricl_fft_bluestein_logsize(xsize);
+    int i, n = 1 << logn;
+    real * chirp = tricl_fft_bluestein_chirp(xsize, sign);
+    real * xmod =  calloc(2*n,sizeof(real));
+    real * h =  calloc(4*n, sizeof(real));
+    real * lut =  calloc(2*n, sizeof(real));
+
+    tricl_fft_makelut(lut, logn);
+
+    for (i = 0; i < xsize; i++)
+    {
+        double c = chirp[2*i + 0];
+        double s = chirp[2*i + 1];
+
+#if 1
+        h[2*i + 0] = c;
+        h[2*i + 1] = s;
+#else
+        h[2*i + 0] = c;
+        h[2*i + 1] = s;
+        h[2*n - 2*i + 0] = c;
+        h[2*n - 2*i + 1] = s;
+#endif
+        xmod[2*i + 0] =   c*x[2*i] + s*x[2*i+1];
+        xmod[2*i + 1] =  -s*x[2*i] + c*x[2*i+1];
+    }
+
+    tricl_fft_fft(xmod, logn, lut);
+    tricl_fft_fft(   h, logn, lut);
+    tricl_fftconv_mulpw(xmod,  h, logn);
+    tricl_fft_ifft(xmod, logn, lut);
+    tricl_fftconv_scale(xmod, logn);
+
+#if 1
+    if (xsize & 1)
+    {
+        for (i = 0; i < 2*xsize; i++)
+        {
+            xmod[i] -= xmod[2*xsize+i];
+        }
+    }
+    else
+    {
+        for (i = 0; i < 2*xsize; i++)
+        {
+            xmod[i] += xmod[2*xsize+i];
+        }
+    }
+#endif
+
+
+    for (i = 0; i < xsize; i++)
+    {
+        real re = xmod[2*i + 0];
+        real im = xmod[2*i + 1];
+        xmod[2*i + 0] = chirp[2*i + 0] * re + chirp[2*i + 1] * im;
+        xmod[2*i + 1] = chirp[2*i + 0] * im - chirp[2*i + 1] * re;
+        out[2*i + 0] = xmod[2*i + 0];//*xsize/2 ;
+        out[2*i + 1] = xmod[2*i + 1];//*xsize/2;
+//        out[2*i + 0] = chirp[2*i + 0];
+//        out[2*i + 1] = chirp[2*i + 1];
+    }
+    free(chirp);
+    free(xmod);
+    free(h);
+    free(lut);
+}
+
+
+void tricl_fft_bluestein_ex(real * x, int xsize, double freq_scalefactor, real  * out)
+{
+    int logn = tricl_fft_bluestein_logsize(xsize);
+    int i, n = 1 << logn;
+    real * chirp = tricl_fft_bluestein_chirp_ex(xsize, freq_scalefactor);
+    real * xmod =  calloc(2*n,sizeof(real));
+    real * h =  calloc(4*n, sizeof(real));
+    real * lut =  calloc(2*n, sizeof(real));
+
+    tricl_fft_makelut(lut, logn);
+
+    for (i = 0; i < xsize; i++)
+    {
+        double c = chirp[2*i + 0];
+        double s = chirp[2*i + 1];
+        h[2*i + 0] = c;
+        h[2*i + 1] = s;
+        xmod[2*i + 0] =   c*x[2*i] + s*x[2*i+1];
+        xmod[2*i + 1] =  -s*x[2*i] + c*x[2*i+1];
+    }
+
+    tricl_fft_fft(xmod, logn, lut);
+    tricl_fft_fft(h, logn, lut);
+    tricl_fftconv_mulpw(xmod, h, logn);
+    tricl_fft_ifft(xmod, logn, lut);
+    tricl_fftconv_scale(xmod, logn);
+
+    if (xsize & 1)
+    {
+        for (i = 0; i < 2*xsize; i++)
+        {
+            xmod[i] -= xmod[2*xsize+i];
+        }
+    }
+    else
+    {
+        for (i = 0; i < 2*xsize; i++)
+        {
+            xmod[i] += xmod[2*xsize+i];
+        }
+    }
+
+    for (i = 0; i < xsize; i++)
+    {
+        real re = xmod[2*i + 0];
+        real im = xmod[2*i + 1];
+        xmod[2*i + 0] = chirp[2*i + 0] * re + chirp[2*i + 1] * im;
+        xmod[2*i + 1] = chirp[2*i + 0] * im - chirp[2*i + 1] * re;
+        out[2*i + 0] = xmod[2*i + 0];
+        out[2*i + 1] = xmod[2*i + 1];
+    }
+    free(chirp);
+    free(h);
+    free(xmod);
+    free(lut);
+}
+
 
 
 
@@ -2041,6 +2559,98 @@ static void FFT_slow(
         yim[w*ystep] = (real)(sum_im);
     }
 }
+
+static void FFT_slow_ex(const real * x, real * y, int n, real t0, real dt, real w0, real dw)
+{
+    int w, k;
+    for (w = 0; w < n; w++)
+    {
+        double sum_re = 0, sum_im = 0;
+        for (k = 0; k < n; k++)
+        {
+            double s = sin((k*dt+t0)*(w*dw+w0));
+            double c = cos((k*dt+t0)*(w*dw+w0));
+            sum_re += x[2*k] * c - x[2*k+1] * s;
+            sum_im += x[2*k] * s + x[2*k+1] * c;
+        }
+        y[2*w+0] = (real)(sum_re);
+        y[2*w+1] = (real)(sum_im);
+    }
+}
+
+
+void test_bluestein()
+{
+    int n = 800001;
+    for (n = 800; n <= 3200; n++)
+    {
+        tricl_fft_bluestein_t * h = tricl_fft_bluestein_alloc(n);
+
+        double err = 0;
+        real * inp = calloc(2*n, sizeof(real));
+        real * ref = calloc(2*n, sizeof(real));
+        real * tst = malloc(2*n*sizeof(real));
+        int i;
+        for (i = 0; i < n; i++)
+        {
+            //tst[i] = inp[2*i+0] = i;
+            tst[i] = inp[2*i+0] = rand();
+            tst[i] = inp[2*i+0] = (i & 1)-0.5;
+        }
+        tricl_fft_bluestein_r2c(h, tst, tst);
+        if (n < 5000)
+        {
+            FFT_slow(inp, inp+1,2, ref, ref+1,2, n, 1);
+            for (err = 0, i = 0; i < n/2+1; i++)
+            {
+                //printf("%f\t%f  \t\t %f\t%f\n", ref[i], ref[i+1], tst[i], tst[i+1]);
+                err += SQR(ref[2*i] - tst[2*i]);
+                err += SQR(ref[2*i+1] - tst[2*i+1]);
+            }
+            printf("%3d err=%e  ", n,err/n);
+        }
+        tricl_fft_bluestein_c2r(h, tst, tst);
+        for (err = 0, i = 0; i < n; i++)
+        {
+            //printf("%f\t%f  \t\t %f\t%f\n", ref[i], ref[i+1], tst[i], tst[i+1]);
+            err += SQR(inp[2*i] - tst[i]);
+        }
+        printf("%3d err=%e\n", n,err/n);
+        free(tst);
+        free(ref);
+        free(inp);
+        tricl_fft_bluestein_free(h);
+    }
+}
+
+void test_bluestein0()
+{
+    int n = 8-1;
+    for (n = 80; n <= 320; n++)
+    {
+        double err = 0;
+        real * inp = calloc(2*n, sizeof(real));
+        real * ref = calloc(2*n, sizeof(real));
+        real * tst = malloc(2*n*sizeof(real));
+        int i;
+        for (i = 0; i < n; i++)
+        {
+            //tst[i] = inp[2*i+0] = i+0;
+            tst[2*i+0] = inp[2*i+0] = rand();
+            tst[2*i+1] = inp[2*i+1] = rand();
+        }
+        tricl_fft_bluestein(tst, n, +1, tst);
+        FFT_slow(inp, inp+1,2, ref, ref+1,2, n, +1);
+        for (i = 0; i < 2*n; i += 2)
+        {
+//           printf("%f\t%f  \t\t %f\t%f\n", ref[i], ref[i+1], tst[i], tst[i+1]);
+            err += SQR(ref[i] - tst[i]);
+            err += SQR(ref[i+1] - tst[i+1]);
+        }
+        printf("%3d err=%e\n", n,err/n);
+    }
+}
+
 
 
 static void vec_rand(real * x, int xStep, int N)
@@ -2275,8 +2885,52 @@ static void compare_with_tricl(int logN)
 }
 
 
+void test_chirp_z()
+{
+    int i, N = 1<<4;
+    real *x0 = malloc(2*N*sizeof(real));
+    real *x1 = malloc(2*N*sizeof(real));
+    real *y0 = malloc(2*N*sizeof(real));
+    real *y1 = malloc(2*N*sizeof(real));
+    vec_rand(x0, 1, 2*N);
+    memcpy(x1, x0, 2*N*sizeof(real));
+
+    FFT_slow_ex(x0, y0, N, 0, 1, 0, 2*PI/N);
+    FFT_slow(x1, x1+1, 2, y1, y1+1, 2, N, +1);
+    for (i = 0; i < 2*N; i++)
+    {
+//        printf("%4d %f\n", i, (y0[i]-y1[i])/y0[i]);
+//        printf("%4d %8f %8f\n", i, y0[i],y1[i]);
+    }
+
+//    FFT_slow_ex(x0, y0, N, 0, 1, 0, 2*PI/N*2);
+//    tricl_fft_bluestein_ex(x1, N, 0.5, y1);
+
+
+    FFT_slow_ex(x0, y0, N, 0, 1, 0, 2*PI/N*2);
+    tricl_fft_bluestein_ex(x1, N, 2, y1);
+
+    {
+    tricl_fft_chirpz_t * h = tricl_fft_chirpz_alloc(N, N, NULL, NULL, 1*1.2);
+    FFT_slow_ex(x0, y0, N, 0, 1, 0, 2*PI/N*1.2);
+    tricl_fft_chirpz(h, x1, y1);
+    }
+
+
+    for (i = 0; i < 2*N; i++)
+    {
+//        printf("%4d %f\n", i, (y0[i]-y1[i])/y0[i]);
+        printf("%4d \t% 8f \t% 8f\t% 8f\n", i, y0[i],y1[i], y0[i]-y1[i]);
+    }
+}
+
+
 int main(int argc, char* argv[])
 {
+    //test_bluestein0();
+    test_chirp_z();
+    return 0;
+
     tricl_fft_makelut(g_lut, LOGN);   //for fft-2048 max
     fftfreq_ctable(g_permc, MAXN);
     fftfreq_rtable(g_permr, MAXN);
