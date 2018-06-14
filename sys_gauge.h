@@ -16,8 +16,7 @@
 #define sys_gauge_H_INCLUDED
 
 #include <stdio.h>
-#include <tchar.h>
-#include <wchar.h>
+#include "type_tchar.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -93,6 +92,8 @@ void GAUGE_puts(
     FILE * f                        //!< stdout or stderr
     );
 
+int GAUGE_printf(const TCHAR * format, ...);
+
 
 int GAUGE_esc_pressed(void);
 
@@ -102,6 +103,9 @@ int GAUGE_esc_pressed(void);
 */
 char * GAUGE_unicode2ansi(const TCHAR * s);
 #endif //_UNICODE
+
+char * GAUGE_unicode2cp(const TCHAR * s, int codepage);
+TCHAR * GAUGE_cp2unicode(const char * s, int codepage);
 
 
 #ifdef __cplusplus
