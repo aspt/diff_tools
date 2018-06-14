@@ -1,0 +1,1 @@
+gcc -O2 -D__USE_LARGEFILE -D__USE_FILE_OFFSET64 -I. -Icompat -owd *.c wavdiff/help.c wavdiff/output.c wavdiff/wd.c -lm

@@ -9,10 +9,17 @@
 #include <stdarg.h>
 #include <string.h>
 #include <float.h>
+#ifdef _WIN32
 #ifdef UNICODE
 #   pragma warning(disable: 4996)   // '_swprintf': swprintf has been changed ...
 #else
 #   include <windows.h>             // CharToOem
+#endif
+#else
+#define _isnan isnan
+#define _finite finite
+#define _snprintf snprintf
+#define _vsnprintf vsnprintf
 #endif
 
 // maximum field width
@@ -156,7 +163,7 @@ static void anchors_save_line(ptrdiff_t anchors[], TCHAR * s)
 */
 static void my_puts(TCHAR * line)
 {
-#ifndef UNICODE
+#if !defined(UNICODE) && defined(_WIN32)
     CharToOem(line, line);  // Convert file names - TODO: does it need? CharToOem() called in GAUGE_puts
 #endif
     if (g_report_file)

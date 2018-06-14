@@ -64,7 +64,7 @@ typedef long long filesize_t;
 static filesize_t file_size64(FILE * f)
 {
     struct stat stat;
-    if (f && !fstat(_fileno(f), &stat))
+    if (f && !fstat(fileno(f), &stat))
     {
         return stat.st_size;
     }
@@ -72,7 +72,7 @@ static filesize_t file_size64(FILE * f)
 }
 static filesize_t file_pos64(FILE * f)
 {
-    return _ftello64(f);
+    return ftello(f);
 }
 #elif defined _WIN32 
 #include <windows.h>
@@ -864,10 +864,10 @@ void WAV_cue_printf(wav_file_t *wf, int pos_samples, int len_samples, const char
     char cue[1024];
     va_list va;
     va_start(va, text);
-#ifdef _TMS320C6X
-    vsnprintf(cue, 1024, text, va); // vsnprintf      _vsntprintf
+#ifdef _MSC_VER
+    _vsnprintf(cue, 1024, text, va);
 #else
-    _vsnprintf(cue, 1024, text, va); // vsnprintf      _vsntprintf
+    vsnprintf(cue, 1024, text, va);
 #endif
     WAV_cue_add(wf, pos_samples, len_samples, cue);
 }

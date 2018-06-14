@@ -5,7 +5,7 @@
 #define WAVDIFF_H
 
 #include "f_wav_io.h"
-#include <tchar.h>
+#include "../type_tchar.h"
 #include <wchar.h>
 
 #if (defined(__GNUC__) && __GNUC__ >= 4) || (defined __STDC_VERSION__ && __STDC_VERSION__ >= 199901)

@@ -710,7 +710,7 @@ static dir_scan_callback_action_t dir_scan(dir_directory_t * dir, dir_entry_t **
     {
         params->path[len-2] = 0;
     }
-    if (!len) params->path[0] = '.', params->path[1] = 0;;
+    if (!len) params->path[0] = '.', params->path[1] = 0;
 //printf("%s\n", params->path);
         
     if (!(dp = opendir(params->path)))
@@ -766,9 +766,9 @@ static dir_scan_callback_action_t dir_scan(dir_directory_t * dir, dir_entry_t **
     {
         if (entry->is_folder)
         {
-            memcpy(params->path_end , entry->name, (entry->name_len + 1)*sizeof(TCHAR));        // "path\" += "directory" or "path\" += "filename"
-            _tcscpy(params->path_end + entry->name_len, _T(SSLASH)_T("*"));                   // Append mask
-            params->path_end += entry->name_len + 1;                             // Set name pointer to * character
+            memcpy(params->path_end, entry->name, (entry->name_len + 1)*sizeof(TCHAR));      // "path\" += "directory" or "path\" += "filename"
+            _tcscpy(params->path_end + entry->name_len, _T(SSLASH) _T("*"));                 // Append mask
+            params->path_end += entry->name_len + 1;                           // Set name pointer to * character
             code = dir_scan(dir, &entry->items, params, entry);                // Scan folder (recursion) with "path\directory\"
             if (parent)
             {

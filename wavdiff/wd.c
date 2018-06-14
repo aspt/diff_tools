@@ -151,7 +151,11 @@ static int read_cmdline_options (int argc, TCHAR *argv[], cmdline_options_t *opt
     {
         TCHAR *  p   = argv[i];
 
-        if (*p == '-' || *p == '/')
+        if (*p == '-'
+#ifdef _WIN32
+            || *p == '/'
+#endif
+           )
         {
             p++;
             if (smatch(_T("r"), &p))
@@ -898,7 +902,9 @@ int _tmain (int argc, TCHAR *argv[])
 
 Cleanup:
     ALIGN_close();
+#ifdef _MSC_VER
     assert(_CrtCheckMemory());
+#endif
     return errorlevel;
 }
 
