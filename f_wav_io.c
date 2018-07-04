@@ -601,10 +601,23 @@ wav_file_t * WAV_open_read (
     if (wav_read_header(wf))
     {
         // WAV file
+        int valid_format;
         wavpos_t file_size;
         wf->container = EFILE_WAV;
 
-        if (wf->fmt.ch == 0 ||wf->fmt.bips == 0 || wf->fmt.hz == 0)
+        if (wf->fmt.pcm_type == E_PCM_IEEE_FLOAT && wf->fmt.bips < 32)
+        {
+            // Override sample type: same behavior as CoolEdit for 16-bit float-point files
+            wf->fmt.pcm_type = E_PCM_INTEGER;
+        }
+
+        valid_format = wf->fmt.ch != 0 && wf->fmt.bips != 0 && wf->fmt.hz != 0;
+        if (wf->fmt.pcm_type == E_PCM_IEEE_FLOAT && wf->fmt.bips != 32 && wf->fmt.bips != 64)
+        {
+            valid_format = 0;
+        }
+
+        if (valid_format)
         {
             // WAV header is present, but format is not valid.
             // pretend that this file is RAW PCM
