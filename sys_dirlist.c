@@ -705,6 +705,15 @@ static dir_scan_callback_action_t dir_scan(dir_directory_t * dir, dir_entry_t **
     // Fill list of entries in this folder
     if (INVALID_HANDLE_VALUE == (ffh = FindFirstFile(params->path, &fd)))
 #else
+
+    if (dir->is_single_file)
+    {
+        struct stat fd;
+        stat(params->path, &fd);
+        dir_add(dir, params, parent, &tail, new_dir_entry(&fd, parent, params->path));
+        return E_DIR_CONTINUE;
+    }
+    else
     if (len > 2 && params->path[len - 1] == '*' && params->path[len - 2] == '/')
     {
         char c = params->path[len - 2];
@@ -713,11 +722,15 @@ static dir_scan_callback_action_t dir_scan(dir_directory_t * dir, dir_entry_t **
         params->path[len - 2] = c;
         if (!dp)
             return E_DIR_CONTINUE;
-    } else if (!len)
+    } 
+    else if (!len)
     {
         if (!(dp = opendir(".")))
+        {
             return E_DIR_CONTINUE;
-    } else
+        }
+    } 
+    else
     if (!(dp = opendir(params->path)))
 #endif
     {
